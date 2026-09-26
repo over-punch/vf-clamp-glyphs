@@ -51,7 +51,7 @@ message in that case.
 ## Installation
 
 1. Download `vf-clamp-glyphs.zip` from
-   [Releases](https://github.com/Liiift-Studio/vf-clamp-glyphs/releases) and
+   [Releases](https://github.com/over-punch/vf-clamp-glyphs/releases) and
    verify the checksum:
    ```bash
    shasum -a 256 vf-clamp-glyphs.zip
