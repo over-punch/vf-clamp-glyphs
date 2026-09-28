@@ -2,7 +2,7 @@
 
 ## Inherited Context
 
-This is a plugin submodule of `@liiift-studio/vf-clamp`. When working inside the
+This is a plugin submodule of `@overpunch/vf-clamp`. When working inside the
 vf-clamp parent repo checkout, Claude Code will also load `vf-clamp/CLAUDE.md` which
 defines the core purpose, API, name table patching approach, and shared conventions.
 
@@ -11,7 +11,7 @@ defines the core purpose, API, name table patching approach, and shared conventi
 A Glyphs.app plugin that generates restricted variable fonts from any TTF/OTF variable
 font file. Font engineers select named instances in a dialog, and the plugin produces
 one restricted VF with the correct name table — matching the delivery behaviour of the
-`@liiift-studio/vf-clamp` npm package.
+`@overpunch/vf-clamp` npm package.
 
 ## Tech Stack
 

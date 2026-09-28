@@ -171,7 +171,7 @@ def sanitize_ps_name(name, max_len=63):
 def compact_name(first, last):
 	"""Strip shared word prefix/suffix from two style names and join with a hyphen.
 
-	Canonical TypeScript implementation: @liiift-studio/vf-clamp src/core/utils.ts
+	Canonical TypeScript implementation: @overpunch/vf-clamp src/core/utils.ts
 	compactName(). Mirrors are kept in vf-clamp-robofont and vf-clamp-vscode.
 
 	Examples:

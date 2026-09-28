@@ -8,7 +8,7 @@ a customer has licensed, click Generate, and receive a micro-VF that spans
 exactly that range — with the name table updated to match.
 
 This is the Glyphs.app companion to the
-[`@liiift-studio/vf-clamp`](https://vfclamp.com) npm package, which does the
+[`@overpunch/vf-clamp`](https://vfclamp.com) npm package, which does the
 same thing server-side for per-purchase delivery. Both implementations share
 the same `compact_name` algorithm; behavioural parity is tracked in
 [CHANGELOG.md](CHANGELOG.md) and enforced by the test suite.
@@ -202,7 +202,7 @@ the delivered file is correct and distinct from the source:
 
 - **nameID 3 (Unique font identifier) is not yet regenerated.** The restricted file
   inherits the source's Unique ID, which can collide with the source in OS font caches.
-  The web/CLI core (`@liiift-studio/vf-clamp`) and the RoboFont extension already
+  The web/CLI core (`@overpunch/vf-clamp`) and the RoboFont extension already
   regenerate it; bringing that here is a planned enhancement.
 
 ---
@@ -299,7 +299,7 @@ WOFF/WOFF2 to use the file source).
 
 - **[vf-clamp npm package](https://vfclamp.com)** — server-side per-purchase
   restricted VF delivery.
-- **[@liiift-studio/vf-clamp on npm](https://www.npmjs.com/package/@liiift-studio/vf-clamp)** —
+- **[@overpunch/vf-clamp on npm](https://www.npmjs.com/package/@overpunch/vf-clamp)** —
   Vercel function + Sanity integration.
 
 ---
