@@ -9,7 +9,7 @@ description = "Glyphs.app plugin for generating restricted variable fonts (vf-cl
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.9"
-authors = [{ name = "Liiift Studio", email = "hello@liiift.studio" }]
+authors = [{ name = "Liiift Studio", email = "hello@overpunch.ca" }]
 
 # Runtime dependencies for the core helpers (the Glyphs UI shell imports
 # AppKit/objc/GlyphsApp which are only present inside Glyphs.app).
