@@ -139,6 +139,7 @@ if _RESOURCES_DIR not in sys.path:
 from core import (  # noqa: E402  (deferred import after sys.path mutation)
 	compact_name,
 	compute_default_output_name,
+	default_output_name,
 	check_fonttools_version,
 	extension_for_format,
 	flavor_for_format,
@@ -2410,7 +2411,17 @@ class VFClampDialog:
 				base = self._gsfont.familyName or ''
 			except Exception:
 				base = ''
-		computed = compute_default_output_name(base, selected[0], selected[-1])
+		# A loaded font file: one range per axis in the font's own style words ("Encode Sans
+		# SemiCondensed-Normal Thin-Light"), the same rule as npm, the web demo and RoboFont.
+		# An open Glyphs document has no fvar to read, so it keeps the first/last-name rule.
+		computed = None
+		if self._source_mode != self.SOURCE_GSFONT and self._cached_font is not None and 'fvar' in self._cached_font:
+			try:
+				computed = default_output_name(self._cached_font, selected)
+			except Exception:
+				computed = None
+		if not computed:
+			computed = compute_default_output_name(base, selected[0], selected[-1])
 		self.w.nameField.set(computed.strip())
 
 	@objc.python_method
