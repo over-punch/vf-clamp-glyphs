@@ -153,19 +153,40 @@ def sanitize_filename(name, fallback='font'):
 	return cleaned or fallback
 
 
+def short_hash(text):
+	"""Six-character FNV-1a hash of a string (base 36), matching shortHash() in @overpunch/vf-clamp."""
+	h = 0x811c9dc5
+	for ch in text:
+		h ^= ord(ch)
+		h = (h * 0x01000193) & 0xFFFFFFFF
+	digits = '0123456789abcdefghijklmnopqrstuvwxyz'
+	out = ''
+	while h:
+		h, rem = divmod(h, 36)
+		out = digits[rem] + out
+	return (out or '0').rjust(6, '0')[-6:]
+
+
 def sanitize_ps_name(name, max_len=63):
 	"""Sanitise a PostScript name (nameID 6).
 
-	Restricts to ASCII alphanumerics and hyphen; collapses runs of hyphens;
-	enforces the PostScript 63-byte length cap; strips leading/trailing
-	hyphens. Returns 'Font' if the result is empty.
+	Transliterates accented Latin (Été -> Ete), restricts to ASCII alphanumerics
+	and hyphen, collapses runs of hyphens and strips leading/trailing hyphens.
+	A name over ``max_len`` keeps a readable prefix plus a hash of the full name,
+	so two long names never collide. A name with no Latin letters becomes
+	'Font-<hash>'; an empty name becomes 'Font'.
 	"""
 	if not name:
 		return 'Font'
-	collapsed = _PS_NAME_RE.sub('', name.replace(' ', '-'))
+	ascii_name = unicodedata.normalize('NFKD', name).encode('ascii', 'ignore').decode('ascii')
+	collapsed = _PS_NAME_RE.sub('', ascii_name.replace(' ', '-'))
 	collapsed = re.sub(r'-+', '-', collapsed).strip('-')
-	collapsed = collapsed[:max_len]
-	return collapsed or 'Font'
+	if not collapsed:
+		# Letters in another script (源ノ角ゴシック) get a hash so families stay distinct; punctuation gets 'Font'.
+		return f'Font-{short_hash(name)}' if any(c.isalpha() for c in name) else 'Font'
+	if len(collapsed) > max_len:
+		collapsed = f'{collapsed[:max_len - 7].rstrip("-")}-{short_hash(name)}'
+	return collapsed
 
 
 def compact_name(first, last):
@@ -365,18 +386,17 @@ def prune_stat_axis_values(font, hull):
 	  the hull. The surviving record's range is clamped to the hull so it does
 	  not advertise a span the file can no longer reach; ``NominalValue`` is
 	  re-anchored into the clamped range when it would otherwise fall outside.
-	* Format 3 (linked) — keep when both ``Value`` and ``LinkedValue`` lie
-	  inside the hull. A LinkedValue pointing outside the new range would lie
-	  about a style link the restricted file cannot reach.
-	* Format 4 (multi-axis) — keep only when every component ``AxisValueRecord``
-	  references an axis the font still has and falls inside that axis's hull.
+	* Format 3 (linked) — keep when ``Value`` lies inside the hull. When its
+	  ``LinkedValue`` falls outside, the record becomes Format 1 (same name, no
+	  link) rather than being dropped, so the style keeps its STAT name.
+	* Format 4 (multi-axis) — keep only when every component value falls inside
+	  that axis's hull.
 
-	DesignAxisRecord is pruned for axes the instancer removed from fvar
-	(i.e. pinned axes whose tag no longer appears in ``font['fvar']``). The
-	``AxisIndex`` on every surviving AxisValue is re-mapped to the new
-	DesignAxisRecord positions, and the ``Format 4`` per-component records are
-	re-mapped as well. ``DesignAxisCount`` is kept in sync. ``AxisValueCount``
-	is updated to match the kept list.
+	A pinned axis is treated as a hull of one point: values at the pin are kept.
+	DesignAxisRecord is never pruned. STAT may describe axes that are not in
+	fvar (pinned ones, or Inter's ``ital``), and upright/italic linking across
+	files depends on those records. ``AxisValueCount`` is updated to match the
+	kept list.
 
 	``ElidedFallbackNameID`` is left untouched: it points into the name table,
 	not the AxisValue table, so STAT pruning does not invalidate it.
@@ -390,16 +410,6 @@ def prune_stat_axis_values(font, hull):
 	if axis_records is None:
 		return
 	tag_for_index = [ax.AxisTag for ax in axis_records.Axis]
-	# Tags still present in the (post-instancer) fvar — axes the instancer
-	# pinned away are absent from fvar. We treat absence-but-in-hull as "the
-	# instancer dropped this axis"; absence-but-not-in-hull as "the font never
-	# had it" (e.g. a STAT axis that fvar didn't carry).
-	fvar_tags = (
-		{ax.axisTag for ax in font['fvar'].axes}
-		if 'fvar' in font
-		else set()
-	)
-
 	value_array = getattr(stat, 'AxisValueArray', None)
 	if value_array is not None:
 		kept = []
@@ -416,10 +426,6 @@ def prune_stat_axis_values(font, hull):
 						ok = False
 						break
 					rec_tag = tag_for_index[rec_idx]
-					if rec_tag in hull and rec_tag not in fvar_tags:
-						# Axis was pinned out by the instancer.
-						ok = False
-						break
 					constraint = hull.get(rec_tag)
 					if constraint is None:
 						continue
@@ -437,9 +443,6 @@ def prune_stat_axis_values(font, hull):
 				kept.append(av)
 				continue
 			tag = tag_for_index[axis_idx]
-			# Drop AxisValue records whose axis was pinned out of fvar.
-			if tag in hull and tag not in fvar_tags:
-				continue
 			constraint = hull.get(tag)
 			if constraint is None:
 				kept.append(av)
@@ -471,10 +474,12 @@ def prune_stat_axis_values(font, hull):
 				linked = getattr(av, 'LinkedValue', None)
 				if val is None or not (lo <= val <= hi):
 					continue
-				# A LinkedValue pointing outside the new hull would advertise a
-				# style link that the restricted file cannot reach.
+				# A LinkedValue outside the new hull points at a style the file
+				# can't reach: keep the name, drop the link (Format 3 -> Format 1).
 				if linked is not None and not (lo <= linked <= hi):
-					continue
+					av.Format = 1
+					if hasattr(av, 'LinkedValue'):
+						del av.LinkedValue
 				kept.append(av)
 			else:
 				# Unknown format — keep to avoid silently dropping data we
@@ -483,76 +488,81 @@ def prune_stat_axis_values(font, hull):
 		value_array.AxisValue = kept
 		stat.AxisValueCount = len(kept)
 
-	# Prune DesignAxisRecord for axes the instancer pinned out, then re-map
-	# AxisIndex on surviving AxisValue records (including Format 4 sub-records).
-	axis_array = axis_records.Axis
-	pinned_indices = {
-		i for i, ax in enumerate(axis_array)
-		if ax.AxisTag in hull and ax.AxisTag not in fvar_tags
-	}
-	if pinned_indices:
-		old_to_new = {}
-		new_axes = []
-		for i, ax in enumerate(axis_array):
-			if i in pinned_indices:
-				continue
-			old_to_new[i] = len(new_axes)
-			new_axes.append(ax)
-		axis_records.Axis = new_axes
-		stat.DesignAxisCount = len(new_axes)
-		if value_array is not None:
-			for av in value_array.AxisValue:
-				fmt = getattr(av, 'Format', None)
-				if fmt == 4:
-					records = getattr(av, 'AxisValueRecord', None) or []
-					for rec in records:
-						old = getattr(rec, 'AxisIndex', None)
-						if old in old_to_new:
-							rec.AxisIndex = old_to_new[old]
-				else:
-					old = getattr(av, 'AxisIndex', None)
-					if old in old_to_new:
-						av.AxisIndex = old_to_new[old]
+
+def _default_instance_style(font):
+	"""Return the subfamily name of the named instance at the font's default location, or None."""
+	if 'fvar' not in font:
+		return None
+	defaults = {ax.axisTag: ax.defaultValue for ax in font['fvar'].axes}
+	for inst in font['fvar'].instances:
+		if all(abs(inst.coordinates.get(t, v) - v) < 0.01 for t, v in defaults.items()):
+			return font['name'].getDebugName(inst.subfamilyNameID)
+	return None
 
 
 def patch_name_table(font, family_name, subfamily=None):
-	"""Update name IDs 1, 2, 4, 6, 16, 17, 25 to reflect the restricted VF.
+	"""Update name IDs 1, 2, 3, 4, 6, 16, 17, 25 and the named instances' PostScript names.
 
-	``subfamily`` controls nameID 2 (subfamily) and nameID 17 (typographic
-	subfamily). When omitted it defaults to ``'Regular'`` — appropriate for a
-	ranged output where the file represents the family-at-default-location.
-	For a single-instance pin, callers should pass the picked instance's
-	subfamily so nameID 2 (and the Full Name 1+2 pairing) stay coherent with
-	what the file actually represents (e.g. pinning the ``Bold`` instance
-	should yield nameID 2 = ``Bold`` and nameID 4 = ``{family} Bold``).
+	Run after :func:`update_os2_and_macstyle_from_fvar`: nameID 2 is the RIBBI
+	style (Regular, Italic, Bold, Bold Italic) that matches OS/2. ``subfamily``
+	is the typographic style for nameID 17 and the full name: pass the picked
+	instance's name for a single-instance pin; for a range it defaults to the
+	instance at the new default location. nameID 3 becomes
+	``version;PostScriptName;family`` so the file doesn't share the source's ID.
 
-	Both Windows (platformID=3, UTF-16-BE) and Mac (platformID=1, mac_roman)
-	records for English (langID 0x0409 / 0) are updated. Non-English localised
+	Unicode (platformID=0) and Windows (platformID=3) records are written as
+	UTF-16-BE; Mac (platformID=1) records as mac_roman, for English (langID 0x0409 / 0). Non-English localised
 	records for these IDs are removed to avoid stale name leakage.
 	mac_roman records that cannot encode the family name are dropped.
 	"""
 	ps_name = sanitize_ps_name(family_name)
-	# Subfamily name keeps Full Name (1+2) and Typo Full (16+17) coherent.
-	# For a pin we expect the picked instance's subfamily (e.g. 'Bold');
-	# for a range we fall back to 'Regular' (the family-at-default convention).
-	subfamily_value = (subfamily or 'Regular').strip() or 'Regular'
-
 	name_table = font['name']
 	existing_ids = {r.nameID for r in name_table.names}
 
+	# nameID 2 must be a RIBBI style that agrees with OS/2 (updated before this runs).
+	fs = font['OS/2'].fsSelection if 'OS/2' in font else 0x40
+	is_bold, is_italic = bool(fs & _FS_BOLD), bool(fs & (_FS_ITALIC | _FS_OBLIQUE))
+	ribbi = ('Bold Italic' if is_italic else 'Bold') if is_bold else ('Italic' if is_italic else 'Regular')
+	# The typographic style: the picked instance for a pin, else the instance at the new default.
+	style = (subfamily or '').strip() or _default_instance_style(font) or ribbi
+
+	try:
+		version = '%.3f' % font['head'].fontRevision
+	except Exception:
+		version = '1.000'
+
 	updates = {
 		1: family_name,
-		2: subfamily_value,
-		4: f'{family_name} {subfamily_value}'.strip(),
+		3: f'{version};{ps_name};{family_name}',
+		4: f'{family_name} {style}'.strip(),
 		6: ps_name,
 	}
 	if 16 in existing_ids:
+		# With a typographic family, nameID 2 is the RIBBI style and 17 carries the real one.
+		updates[2] = ribbi
 		updates[16] = family_name
-		# Pair nameID 17 with nameID 16 to satisfy Windows GDI requirements
-		updates[17] = subfamily_value
+		updates[17] = style
+	else:
+		# No typographic family: nameID 2 carries the style itself, kept consistent with OS/2.
+		if style in ('Regular', 'Bold', 'Italic', 'Bold Italic'):
+			updates[2] = ribbi
+		elif is_italic and 'Italic' not in style:
+			updates[2] = f'{style} Italic'
+		else:
+			updates[2] = style
+		updates[4] = f'{family_name} {updates[2]}'.strip()
 	if 25 in existing_ids:
 		# Variations PostScript Name Prefix recommends <=27 chars, no trailing '-'
 		updates[25] = ps_name[:27].rstrip('-') or 'Font'
+	# Named instances' PostScript names follow the new prefix (e.g. Inter-Regular-Bold-Medium).
+	prefix = updates.get(25, ps_name)
+	if 'fvar' in font:
+		for inst in font['fvar'].instances:
+			pid = getattr(inst, 'postscriptNameID', 0xFFFF)
+			if pid in (None, 0xFFFF) or pid in updates:
+				continue
+			inst_style = re.sub(r'[^A-Za-z0-9-]', '', (name_table.getDebugName(inst.subfamilyNameID) or '').replace(' ', ''))
+			updates[pid] = f'{prefix}-{inst_style}'[:63]
 
 	english_lang_ids = {0, 0x0409}  # Mac English, Windows en-US
 
@@ -569,7 +579,7 @@ def patch_name_table(font, family_name, subfamily=None):
 		if record.nameID not in updates:
 			continue
 		value = updates[record.nameID]
-		if record.platformID == 3:
+		if record.platformID in (0, 3):
 			record.string = value.encode('utf-16-be')
 			updated.add((record.nameID, 3))
 		elif record.platformID == 1:
@@ -769,11 +779,12 @@ def update_os2_and_macstyle_from_fvar(font, hull=None):
 	fvar entirely (those values come from ``hull``):
 
 	* ``wght`` -> ``OS/2.usWeightClass`` (rounded, clamped to 1..1000) and the
-	  ``BOLD`` bits in fsSelection / macStyle when the default >= 600.
+	  ``BOLD`` bits in fsSelection / macStyle when the default >= 700.
 	* ``wdth`` -> ``OS/2.usWidthClass`` via the standard 50..200 -> 1..9 map.
 	* ``ital`` (>= 0.5) or ``slnt`` (negative) -> ``ITALIC`` bits in fsSelection
 	  and macStyle. A negative slnt without an ital axis is conventionally
-	  recorded as oblique as well.
+	  recorded as oblique as well. With neither axis, the source's italic and
+	  oblique bits are kept (a separate italic VF stays italic).
 	* ``REGULAR`` is set iff none of BOLD / ITALIC / OBLIQUE end up set.
 
 	``hull`` is optional. When passed, axes the instancer pinned out of fvar
@@ -803,11 +814,17 @@ def update_os2_and_macstyle_from_fvar(font, hull=None):
 	# Resolve italic / oblique. ital is a boolean-style axis (0 = upright,
 	# 1 = italic); slnt is signed degrees, with negative values forward-leaning
 	# (conventionally italic / oblique).
-	is_italic = (ital is not None and ital >= 0.5) or (slnt is not None and slnt < 0)
-	is_oblique = slnt is not None and slnt < 0 and (ital is None or ital < 0.5)
-	is_bold = wght is not None and wght >= 600
-
 	fs = getattr(os2, 'fsSelection', 0) or 0
+	if ital is None and slnt is None:
+		# No italic axis to read: an italic source file stays italic.
+		is_italic = bool(fs & _FS_ITALIC)
+		is_oblique = bool(fs & _FS_OBLIQUE)
+	else:
+		is_italic = (ital is not None and ital >= 0.5) or (slnt is not None and slnt < 0)
+		is_oblique = slnt is not None and slnt < 0 and (ital is None or ital < 0.5)
+	# RIBBI bold is 700 and up; a SemiBold default is not "Bold".
+	is_bold = wght is not None and wght >= 700
+
 	# Clear the bits we own then re-set the ones the new default warrants.
 	fs &= ~(_FS_ITALIC | _FS_BOLD | _FS_REGULAR | _FS_OBLIQUE)
 	if is_italic:
@@ -847,6 +864,12 @@ def produce_restricted_vf(font_path, selected_names, family_name, output_path, f
 		if not hull:
 			raise ValueError('No valid named instances found for the selected names.')
 
+		# avar version 2 needs fontTools 4.64+ to restrict; VARC components can't be restricted at all yet.
+		if 'avar' in font and getattr(font['avar'], 'majorVersion', 1) >= 2 and check_fonttools_version() < (4, 64, 0):
+			raise ValueError('This font uses avar version 2, which needs fontTools 4.64 or newer to clamp safely.')
+		if 'VARC' in font:
+			raise ValueError('This font uses variable components (VARC), which fontTools cannot restrict yet.')
+
 		# Run instancer (handles avar, HVAR/MVAR/VVAR, OS/2 fsSelection updates internally)
 		# We catch Exception here because fontTools' instancer can raise many
 		# different internal exception types (TTLibError, KeyError, ValueError
@@ -870,12 +893,13 @@ def produce_restricted_vf(font_path, selected_names, family_name, output_path, f
 			# Strip the ' #N' disambiguation suffix used by get_instance_names
 			only = re.sub(r' #\d+$', '', only)
 			subfamily_for_name = only or None
-		patch_name_table(partial, family_name, subfamily=subfamily_for_name)
 		# Update OS/2 + head.macStyle to reflect the new fvar default (or the
-		# pinned location). fontTools' instancer is incomplete here — slant/
-		# italic-derived bits in fsSelection/macStyle are never set, and older
-		# fontTools versions skip the weight/width recompute for ranged outputs.
+		# pinned location) first: patch_name_table reads the bits for nameID 2.
+		# fontTools' instancer is incomplete here — slant/italic-derived bits in
+		# fsSelection/macStyle are never set, and older fontTools versions skip
+		# the weight/width recompute for ranged outputs.
 		update_os2_and_macstyle_from_fvar(partial, hull)
+		patch_name_table(partial, family_name, subfamily=subfamily_for_name)
 
 		flavor = flavor_for_format(fmt)
 		if flavor is not None:
