@@ -500,6 +500,13 @@ def _default_instance_style(font):
 	return None
 
 
+def _full_name(family_name, style):
+	"""Full name (nameID 4): family plus style, leaving out 'Regular' (as the OpenType spec advises) and a style the family name already ends with."""
+	if not style or style == 'Regular' or family_name.lower().endswith(style.lower()):
+		return family_name
+	return f'{family_name} {style}'
+
+
 def patch_name_table(font, family_name, subfamily=None):
 	"""Update name IDs 1, 2, 3, 4, 6, 16, 17, 25 and the named instances' PostScript names.
 
@@ -534,7 +541,7 @@ def patch_name_table(font, family_name, subfamily=None):
 	updates = {
 		1: family_name,
 		3: f'{version};{ps_name};{family_name}',
-		4: f'{family_name} {style}'.strip(),
+		4: _full_name(family_name, style),
 		6: ps_name,
 	}
 	if 16 in existing_ids:
@@ -543,19 +550,14 @@ def patch_name_table(font, family_name, subfamily=None):
 		updates[16] = family_name
 		updates[17] = style
 	else:
-		# No typographic family: nameID 2 carries the style itself, kept consistent with OS/2.
-		if style in ('Regular', 'Bold', 'Italic', 'Bold Italic'):
-			updates[2] = ribbi
-		elif is_italic and 'Italic' not in style:
-			updates[2] = f'{style} Italic'
-		else:
-			updates[2] = style
-		updates[4] = f'{family_name} {updates[2]}'.strip()
+		# No typographic family: nameID 2 is still one of the four RIBBI styles (OpenType spec). A
+		# non-RIBBI style such as SemiBold lives in the family name, like "Arial Black" + "Regular".
+		updates[2] = ribbi
+	# nameID 25 may only hold ASCII letters and digits (OpenType spec); named-instance PostScript
+	# names are <prefix>-<style> (Adobe Technical Note #5902), e.g. InterRegularBold-Medium.
+	prefix = re.sub(r'[^A-Za-z0-9]', '', ps_name)[:27] or 'Font'
 	if 25 in existing_ids:
-		# Variations PostScript Name Prefix recommends <=27 chars, no trailing '-'
-		updates[25] = ps_name[:27].rstrip('-') or 'Font'
-	# Named instances' PostScript names follow the new prefix (e.g. Inter-Regular-Bold-Medium).
-	prefix = updates.get(25, ps_name)
+		updates[25] = prefix
 	if 'fvar' in font:
 		for inst in font['fvar'].instances:
 			pid = getattr(inst, 'postscriptNameID', 0xFFFF)
