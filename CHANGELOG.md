@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.2.21] — 2026-10-05
+
+Fixes from a font-engineering review of vf-clamp (the same issues were fixed in `@overpunch/vf-clamp` 2.3.0):
+
+- **STAT axis records are kept.** Clamping removed the STAT design-axis record of every pinned axis (Inter's `opsz` when pinned), which breaks upright/italic linking across files. Design-axis records are now never removed; pinned axes keep the axis values at the pin.
+- **Linked STAT values keep their names.** A Format 3 value whose link pointed outside the new range was deleted, taking the style's STAT name with it. It now becomes a Format 1 value (same name, no link).
+- **Names on every platform.** Unicode-platform (0) name records were left with the retail names; they're now rewritten with the Windows ones. nameID 3 (unique ID) is rewritten to `version;PostScriptName;family` so the file never shares the source's ID. Named instances' PostScript names now follow the new prefix instead of the retail one.
+- **RIBBI-correct style.** BOLD is set from weight 700, not 600, so a SemiBold default is no longer flagged Bold. A separate italic VF (no `ital`/`slnt` axis) keeps its ITALIC bit and is named Italic; nameID 2 always agrees with OS/2.
+- **Safe PostScript names.** Accented names are transliterated (Été → Ete), names in other scripts get `Font-<hash>`, and names over 63 characters end in a hash so two long names never collide.
+- **avar 2 and VARC fonts are refused** where the installed fontTools can't restrict them correctly.
+- Adds `tests/test_review_fixes.py` (8 tests against the Inter fixture).
+
 ## [1.2.20] — 2026-06-22
 
 Two upstream issue fixes plus a README addition:
